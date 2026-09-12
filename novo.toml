@@ -1,0 +1,70 @@
+[package]
+name        = "logging-core-nv"
+license     = "Apache-2.0"
+version     = "0.0.1"
+description = "The half of structured logging a core library can reach: the record with typed fields, the levels, the longest-prefix filter and its specification grammar, the human/logfmt/JSON-lines formatters into a caller's buffer, the LgSink[e] trait declaration with the null sink, and the ring buffer as a value.  logging-nv keeps the file, console and deflog sinks and the rotation.  Interface only — every body is a todo()."
+
+# `license` sits immediately after the name, before any value that could
+# contain a square bracket.  The publish reads it with a pattern that
+# stops at the first `[`, so a description naming an effect row or an
+# effect-parameterised trait hides it and the release records no licence
+# at all — silently.
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`, and this package exists BECAUSE of the layer rule rather than
+# in spite of it.  logging-nv declares `host`, so a `core` library may
+# not depend on it — and `LgSink[e]`, the trait designed to let a
+# library log at `[]`, was therefore out of reach of exactly the callers
+# it was designed for.  Every declaration that moved here was already
+# `[]`: the record, the filter, the formatters, the trait, the null sink
+# and the ring's value half.  Nothing was redesigned to make the split;
+# the line was already drawn in logging-nv's own module table.
+#
+# What did NOT come, and why: `lgwrite` is `[io]`, `lgfile` is `[fs]`,
+# `LgRingSink`'s impl is `[mutate]`, `lglog.now` is `[time]`, and
+# `lgdeflog` needs deflog-decoder.  Each is outside a `core` budget by
+# one row.
+#
+# NO DEVICE CLAIM.  An `LgRecord` holds a `Str` message and a list of
+# fields, both of which allocate; what a device logs is deflog's
+# interned index, and turning that into a record is a HOST-side
+# conversion that logging-nv already owns.  The README says so.
+layer       = "core"
+
+category    = "tooling"
+
+tags        = ["logging", "log", "structured-logging", "sink", "logfmt", "json-lines", "core"]
+repository  = "https://github.com/novolang/logging-core-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "The record, the filter, the format and the trait — at core"
+
+[dependencies]
+# Colour, for the human formatter and nothing else.  ansi-nv is `core`,
+# so it costs a consumer no effects; `SgrAttrs` and `SgrDepth` are in
+# this package's public surface because a theme a caller cannot change
+# is a theme that is wrong for somebody's terminal.
+#
+# The reason it is a dependency rather than an escape string: a level
+# tag written as `"\u{1b}[31m"` cannot be downgraded to the sixteen
+# colours a real TTY has, and `sgr.downgrade` is exactly that arithmetic.
+ansi-nv = "^0.0.1"
+
+# NOT deflog-decoder and NOT deflog-parser.  logging-nv depends on both
+# for `lgdeflog`, and their closure — elf-nv, leb128-nv, zigzag-nv,
+# rzcobs-nv — is four packages a program that only wants a log line does
+# not need.  That module stays in logging-nv, so a `core` library taking
+# THIS package assembles two packages instead of seven.  That is the
+# second argument for the split, after the layer rule, and it is the one
+# a consumer feels.

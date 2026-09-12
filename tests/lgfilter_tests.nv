@@ -1,0 +1,156 @@
+// lgfilter_tests.nv — longest prefix, segment aware, and the
+// specification grammar.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: logging-core-nv.lgfilter.<fn>`.
+//
+// THE ONE CASE THIS SUITE EXISTS FOR is `"ml"` against `mlx`.  A prefix
+// test written with `str.starts_with` passes every other case in this
+// file and fails that one, the symptom is a package nobody configured
+// going quiet, and nothing in a rendered log line says why.
+
+use std.test
+use std.list
+use lgfilter
+
+@test
+fn test_a_prefix_governs_by_segment_and_not_by_character() [io]
+    test.case("a prefix governs the name itself")
+    test.assert(lgfilter.prefix_governs("ml", "ml"))
+
+    test.case("and everything under it")
+    test.assert(lgfilter.prefix_governs("ml", "ml.core"))
+    test.assert(lgfilter.prefix_governs("ml", "ml.core.cpu"))
+
+    test.case("the empty prefix is the root rule and governs everything")
+    test.assert(lgfilter.prefix_governs("", "anything"))
+
+    test.case("and it does NOT govern a name that merely starts with it")
+    test.assert(lgfilter.prefix_governs("ml", "mlx") == false)
+    test.assert(lgfilter.prefix_governs("ml", "mlx.core") == false)
+
+@test
+fn test_the_longest_matching_prefix_wins_whatever_the_order() [io]
+    let a = lgfilter.rule(lgfilter.rule(lgfilter.filter(LgInfo), "ml", LgWarn),
+                          "ml.core", LgDebug)
+    let b = lgfilter.rule(lgfilter.rule(lgfilter.filter(LgInfo), "ml.core", LgDebug),
+                          "ml", LgWarn)
+
+    test.case("the longer rule governs its own subtree")
+    test.assert(lgfilter.level_for(a, "ml.core") == LgDebug)
+
+    test.case("the shorter one governs the rest of the tree")
+    test.assert(lgfilter.level_for(a, "ml.cpu") == LgWarn)
+
+    test.case("a target under neither takes the default")
+    test.assert(lgfilter.level_for(a, "http") == LgInfo)
+
+    test.case("and declaration order changes nothing, which is the point")
+    test.assert(lgfilter.level_for(b, "ml.core") == LgDebug)
+    test.assert(lgfilter.level_for(b, "ml.cpu") == LgWarn)
+
+@test
+fn test_allows_is_the_threshold_applied() [io]
+    let f = lgfilter.rule(lgfilter.filter(LgInfo), "ml", LgWarn)
+
+    test.case("a record at the threshold passes")
+    test.assert(lgfilter.allows(f, "ml.core", LgWarn))
+
+    test.case("a louder one passes")
+    test.assert(lgfilter.allows(f, "ml.core", LgError))
+
+    test.case("a quieter one does not")
+    test.assert(lgfilter.allows(f, "ml.core", LgInfo) == false)
+
+    test.case("and the same record from another target takes the default")
+    test.assert(lgfilter.allows(f, "http", LgInfo))
+
+@test
+fn test_the_governing_rule_is_reportable() [io]
+    let f = lgfilter.rule(lgfilter.filter(LgInfo), "ml", LgWarn)
+
+    test.case("a governed target names the rule that governs it")
+    match lgfilter.governing_rule(f, "ml.core")
+        Some(r) => test.assert(r.prefix == "ml")
+        None    => test.assert(false)
+
+    test.case("and a target the default governs answers None rather than a fake rule")
+    test.assert(lgfilter.governing_rule(f, "http") == None)
+
+@test
+fn test_the_specification_grammar_is_what_people_already_type() [io]
+    test.case("a bare level sets the default and adds no rule")
+    match lgfilter.parse_spec("info")
+        Ok(f)  =>
+            test.assert(f.default_level == LgInfo)
+            test.assert(list.len(f.rules) == 0)
+        Err(_) => test.assert(false)
+
+    test.case("clauses after it are rules")
+    match lgfilter.parse_spec("info,http=error,ml.core=debug")
+        Ok(f)  =>
+            test.assert(list.len(f.rules) == 2)
+            test.assert(lgfilter.level_for(f, "ml.core") == LgDebug)
+            test.assert(lgfilter.level_for(f, "http.client") == LgError)
+        Err(_) => test.assert(false)
+
+    test.case("whitespace around a clause is ignored, so a pasted line works")
+    match lgfilter.parse_spec(" info , http = error ")
+        Ok(f)  => test.assert(lgfilter.level_for(f, "http") == LgError)
+        Err(_) => test.assert(false)
+
+@test
+fn test_every_way_a_specification_goes_wrong_names_where() [io]
+    test.case("a level with nothing to govern")
+    match lgfilter.parse_spec("info,=debug")
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(e.message() != "")
+
+    test.case("a word that is not a level")
+    match lgfilter.parse_spec("info,http=lowd")
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(e.message() != "")
+
+    test.case("the same target twice, which is a mistake a person can see")
+    match lgfilter.parse_spec("info,http=warn,http=error")
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(e.message() != "")
+
+@test
+fn test_a_filter_round_trips_through_its_own_specification() [io]
+    let f = lgfilter.rule(lgfilter.rule(lgfilter.filter(LgInfo), "http", LgError),
+                          "ml.core", LgDebug)
+
+    test.case("the spec parses back to a filter that answers the same way")
+    match lgfilter.parse_spec(lgfilter.spec_of(f))
+        Ok(g)  =>
+            test.assert(lgfilter.level_for(g, "ml.core") == lgfilter.level_for(f, "ml.core"))
+            test.assert(lgfilter.level_for(g, "http") == lgfilter.level_for(f, "http"))
+            test.assert(g.default_level == f.default_level)
+        Err(_) => test.assert(false)
+
+@test
+fn test_the_cheap_gate_never_hides_a_record_a_rule_would_admit() [io]
+    let f = lgfilter.rule(lgfilter.filter(LgWarn), "ml", LgDebug)
+
+    test.case("the gate is the loudest threshold anywhere in the filter")
+    test.assert(lgfilter.cheapest_gate(f) == LgDebug)
+
+    test.case("so anything the gate admits may still be filtered per target")
+    test.assert(lgfilter.allows(f, "http", LgDebug) == false)
+
+    test.case("and nothing the gate refuses is admitted anywhere")
+    test.assert(lgfilter.allows(f, "ml.core", LgTrace) == false)
+
+@test
+fn test_a_rule_that_can_never_matter_is_reported_not_removed() [io]
+    let f = lgfilter.rule(lgfilter.filter(LgInfo), "ml", LgInfo)
+
+    test.case("a rule that repeats the default changes no answer")
+    test.assert(lgfilter.level_for(f, "ml.core") == LgInfo)
+
+    test.case("so it is reported")
+    test.assert(list.len(lgfilter.redundant_rules(f)) == 1)
+
+    test.case("and it is still in the filter, because removing a caller's rule silently is worse")
+    test.assert(list.len(f.rules) == 1)

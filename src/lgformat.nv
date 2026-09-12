@@ -1,0 +1,347 @@
+// lgformat.nv — the three renderings, and the one that is not a
+// rendering at all.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THREE FORMATS, AND THEY ARE NOT PREFERENCES.  Human is for a person
+// reading a terminal; logfmt is for a person reading a terminal who also
+// pipes it through `grep key=`; JSON lines is for a collector.  A
+// package that shipped one and called the others "formatting" would
+// force every service that ships logs to reimplement the other two, and
+// the reimplementation is where the escaping goes wrong.
+//
+// RENDERING IS PURE, AND IT IS PURE ON PURPOSE.  Every row in this
+// module is `[]`, which is what lets a test assert on the exact bytes of
+// a log line without capturing a file descriptor — the property
+// `std.log`'s `render_at` already has and the reason it exists.  It is
+// also what lets a `core`-shaped caller hold a rendered line: nothing
+// here is charged to anybody.
+//
+// THE WRITER FORM WRITES INTO THE CALLER'S BUFFER.  `render_into` takes
+// the `[u8]` a caller already has and appends to it, which is the shape
+// ansi-nv's own `seqwrite` uses and the reason a terminal sink can
+// render a hundred lines into one buffer and issue one write.  `render`
+// is the convenience over it.
+//
+// COLOUR IS A VALUE AND IT IS NOT DECIDED HERE.  `LgHumanStyle.colour`
+// is a field; nothing in this module asks whether the output is a
+// terminal, because asking is `[io]` and would charge every render for
+// a question about a file descriptor the renderer does not hold.
+// `lgwrite.is_terminal` is where that question is asked, once, by the
+// party that owns the descriptor.
+
+use sgr
+
+// How much colour the destination can take.
+//
+// A field on the style rather than a guess, because `sgr.downgrade` can
+// narrow a theme's twenty-four-bit colour to the sixteen a real TTY has
+// and cannot widen it back — so the depth has to arrive from the party
+// that knows.
+pub struct LgHumanStyle
+    // Emit SGR sequences at all.  `false` is the right default for a
+    // library, and `lgwrite.is_terminal` is how a program flips it.
+    colour: Bool
+    // What the destination understands, for `sgr.downgrade`.
+    depth: SgrDepth
+    // Print `[target]` before the message.
+    show_target: Bool
+    // Print `file:line` when the record carries one.
+    show_location: Bool
+    // How a timestamp is spelled, when the record has one.
+    stamp: LgStamp
+
+// How a timestamp is written into a human or logfmt line.
+//
+// JSON always writes the epoch number, because a collector sorts on it
+// and every ambiguity in a formatted string is the collector's problem.
+pub enum LgStamp
+    // Omit it even when the record carries one.
+    LgStampNone
+    // The epoch seconds as a number: unambiguous without a timezone,
+    // sorts as a number, and costs no date arithmetic.
+    LgStampEpoch
+    // `1970-01-01T00:00:00Z`.  UTC only — a local rendering would need
+    // a zone database and a clock, and this module has neither.
+    LgStampRfc3339
+
+// Which rendering, and the human one's style.
+//
+// The style rides on the variant rather than on a separate argument
+// because a `LgFormat` is what a sink STORES: a sink configured once at
+// startup holds the whole decision, and the emit path has one value to
+// consult instead of two that can disagree.
+pub enum LgFormat
+    LgFmtHuman(style: LgHumanStyle)
+    LgFmtLogfmt
+    LgFmtJson
+
+// The colours the human format uses, per level and per part.
+//
+// A value rather than constants, because a theme that suits a dark
+// terminal is unreadable on a light one and no library can know which
+// the reader has.  `default_theme` is the one that works on both.
+pub struct LgTheme
+    trace: SgrAttrs
+    debug: SgrAttrs
+    info: SgrAttrs
+    warn: SgrAttrs
+    error: SgrAttrs
+    // The field keys, which are dimmed so the values read first.
+    key: SgrAttrs
+    // The target name.
+    target: SgrAttrs
+
+// The human format with no colour and no location, stamping the epoch.
+//
+// The default a library should use, because a library does not know
+// where its host's logs go.
+//
+// ```novo
+// use lgformat
+//
+// fn main() [io]
+//     let f = lgformat.human()
+//     println("${lgformat.format_name(f)}")
+// ```
+pub fn human() -> LgFormat []
+    todo("logging-core-nv.lgformat.human")
+
+// The human format with colour at the given depth.
+//
+// ```novo
+// use lgformat
+//
+// fn main() [io]
+//     let f = lgformat.human_colour(SgrDepth256)
+//     println("${lgformat.format_name(f)}")
+// ```
+pub fn human_colour(depth: SgrDepth) -> LgFormat []
+    todo("logging-core-nv.lgformat.human_colour")
+
+// The style a `LgFmtHuman` starts from: no colour, target shown,
+// location hidden, epoch stamp.
+//
+// Published separately from `human()` so a caller can change one field
+// and rebuild the variant, which is the ordinary way a program turns
+// locations on for a debug build.
+//
+// ```novo
+// use lgformat
+//
+// fn main() [io]
+//     let s = lgformat.default_style()
+//     println("${s.show_target}")
+// ```
+pub fn default_style() -> LgHumanStyle []
+    todo("logging-core-nv.lgformat.default_style")
+
+// `key=value` pairs on one line, the logfmt convention.
+//
+// ```novo
+// use lgformat
+//
+// fn main() [io]
+//     println("${lgformat.format_name(lgformat.logfmt())}")
+// ```
+pub fn logfmt() -> LgFormat []
+    todo("logging-core-nv.lgformat.logfmt")
+
+// One JSON object per line, newline terminated.
+//
+// ```novo
+// use lgformat
+//
+// fn main() [io]
+//     println("${lgformat.format_name(lgformat.json())}")
+// ```
+pub fn json() -> LgFormat []
+    todo("logging-core-nv.lgformat.json")
+
+// The format's own name — `"human"`, `"logfmt"`, `"json"`.
+//
+// What a `--log-format` flag round-trips through, and what a startup
+// line says it chose.
+//
+// ```novo
+// use lgformat
+//
+// fn main() [io]
+//     println(lgformat.format_name(lgformat.json()))
+// ```
+pub fn format_name(f: LgFormat) -> Str []
+    todo("logging-core-nv.lgformat.format_name")
+
+// A format from what a person typed, or `None`.
+//
+// `None` rather than a default, for the same reason `level_parse`
+// answers one: a program that silently fell back to human output when a
+// collector was expecting JSON has broken its own ingestion and said
+// nothing.
+//
+// ```novo
+// use lgformat
+//
+// fn main() [io]
+//     match lgformat.format_parse("json")
+//         Some(f) => println(lgformat.format_name(f))
+//         None    => println("not a format")
+// ```
+pub fn format_parse(text: Str) -> ?LgFormat []
+    todo("logging-core-nv.lgformat.format_parse")
+
+// The theme that is legible on a dark terminal and on a light one.
+//
+// ```novo
+// use lgformat
+//
+// fn main() [io]
+//     let t = lgformat.default_theme()
+//     println("${sgr.attrs_eq(t.info, t.warn)}")
+// ```
+pub fn default_theme() -> LgTheme []
+    todo("logging-core-nv.lgformat.default_theme")
+
+// The attributes this theme gives a level.
+//
+// ```novo
+// use lgformat
+//
+// fn main() [io]
+//     let a = lgformat.level_attrs(lgformat.default_theme(), LgError)
+//     println("${sgr.attrs_eq(a, a)}")
+// ```
+pub fn level_attrs(t: LgTheme, l: LgLevel) -> SgrAttrs []
+    todo("logging-core-nv.lgformat.level_attrs")
+
+// One record, rendered, with the default theme and no trailing newline.
+//
+// No newline because the caller decides the separator: a file sink
+// writes `\n`, a syslog datagram writes nothing, and a test compares
+// the line itself.
+//
+// ```novo
+// use lgformat
+// use lgrecord
+//
+// fn main() [io]
+//     let r = lgrecord.record(LgWarn, "db", "slow query")
+//     println(lgformat.render(lgformat.logfmt(), r))
+// ```
+pub fn render(f: LgFormat, r: LgRecord) -> Str []
+    todo("logging-core-nv.lgformat.render")
+
+// The same, with a theme the caller supplies.
+//
+// ```novo
+// use lgformat
+// use lgrecord
+//
+// fn main() [io]
+//     let r = lgrecord.record(LgWarn, "db", "slow query")
+//     println(lgformat.render_with(lgformat.human(), lgformat.default_theme(), r))
+// ```
+pub fn render_with(f: LgFormat, t: LgTheme, r: LgRecord) -> Str []
+    todo("logging-core-nv.lgformat.render_with")
+
+// The same, appended to a buffer the caller owns, with the newline.
+//
+// The form a sink uses: a hundred records into one `[u8]` and one
+// write, rather than a hundred strings and a hundred writes.  The
+// newline IS included here, because a buffer holding several records
+// needs them separated and a caller appending one record to an empty
+// buffer can slice it off.
+//
+// ```novo
+// use lgformat
+// use lgrecord
+//
+// fn main() [io]
+//     let r = lgrecord.record(LgInfo, "app", "started")
+//     let out = lgformat.render_into(lgformat.json(), lgformat.default_theme(), r, [])
+//     println("${list.len(out)}")
+// ```
+pub fn render_into(f: LgFormat, t: LgTheme, r: LgRecord, out: [u8]) -> [u8] []
+    todo("logging-core-nv.lgformat.render_into")
+
+// One value as the text the format writes for it.
+//
+// Published because it is the only place the "an `Int` field is a
+// number in JSON and an unquoted token in logfmt" rule lives, and a
+// caller building a line by hand — a panic handler with no allocator
+// left, say — needs the same answer.
+//
+// ```novo
+// use lgformat
+//
+// fn main() [io]
+//     println(lgformat.value_text(LgvInt(512)))
+// ```
+pub fn value_text(v: LgValue) -> Str []
+    todo("logging-core-nv.lgformat.value_text")
+
+// Would logfmt have to quote this value?
+//
+// A value containing a space, a `=`, a quote or a control byte is
+// quoted; everything else is bare.  Published as a predicate because
+// the rule is what a consumer's parser has to agree with, and a test
+// that asserts on the predicate directly is worth three that assert on
+// whole lines.
+//
+// ```novo
+// use lgformat
+//
+// fn main() [io]
+//     let q = lgformat.logfmt_needs_quoting("a b")
+//     println("${q}")
+// ```
+pub fn logfmt_needs_quoting(v: Str) -> Bool []
+    todo("logging-core-nv.lgformat.logfmt_needs_quoting")
+
+// A logfmt value, quoted and escaped if it has to be.
+//
+// ```novo
+// use lgformat
+//
+// fn main() [io]
+//     println(lgformat.logfmt_value("a b"))
+// ```
+pub fn logfmt_value(v: Str) -> Str []
+    todo("logging-core-nv.lgformat.logfmt_value")
+
+// The record as one JSON object, without the newline.
+//
+// Keys in emission order: `level`, `logger` when the target is not
+// empty, `msg`, `ts` when the record is stamped, then the fields.  The
+// order is deterministic and a consumer must not depend on it — JSON
+// objects are unordered and the guarantee is the KEY SET, which is the
+// same promise `std.log` makes and for the same reason.
+//
+// String escaping goes through the standard library's JSON encoder, so
+// it is not a second implementation to keep in step.
+//
+// ```novo
+// use lgformat
+// use lgrecord
+//
+// fn main() [io]
+//     let r = lgrecord.record(LgInfo, "app", "started")
+//     println(lgformat.json_object(r))
+// ```
+pub fn json_object(r: LgRecord) -> Str []
+    todo("logging-core-nv.lgformat.json_object")
+
+// The width the level tag is padded to in the human format.
+//
+// Nine, which is the column `std.log`'s own text format uses — so a
+// program that emits through both surfaces during a migration produces
+// lines that still align.
+//
+// ```novo
+// use lgformat
+//
+// fn main() [io]
+//     println("${lgformat.tag_column()}")
+// ```
+pub fn tag_column() -> Int []
+    todo("logging-core-nv.lgformat.tag_column")

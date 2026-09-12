@@ -1,0 +1,266 @@
+// lgfilter.nv — which records are worth the sink, decided before the
+// record is rendered.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A FILTER IS A VALUE, NOT A GLOBAL.  `std.log`'s global functions keep
+// one process-wide threshold in the C runtime, which is right for a
+// script and wrong for everything with more than one subsystem: a
+// service that wants `debug` out of its scheduler and `error` out of its
+// HTTP client cannot say so, and two libraries that both call
+// `log.set_level` fight over one integer.  Here the filter is a value a
+// caller threads, so a test can build one per case and a program can
+// hold several.
+//
+// LONGEST PREFIX WINS, SEGMENT-AWARE, and the two halves of that
+// sentence are both load-bearing.  Longest-prefix means a specific rule
+// beats a general one regardless of the order the rules were added, so
+// a configuration file's line order is not a hidden semantic.
+// Segment-aware means `"ml"` governs `ml` and `ml.core` and NOT `mlx` —
+// a plain string prefix test gets that wrong, silently, and the symptom
+// is a package nobody configured going quiet.
+//
+// THE DECISION IS SEPARATE FROM THE RENDER, and that is the reason
+// `allows` exists as its own call rather than being folded into the
+// emit path: `str` interpolation in a caller's message argument is
+// evaluated before the call, so a debug line inside a hot loop costs
+// its formatting whether or not it is emitted.  A caller that checks
+// `allows` first pays nothing.  `cheapest_gate` is the same saving for a
+// caller that can hoist the check out of the loop entirely.
+//
+// NOTHING HERE PERFORMS ANYTHING.  Every row in this module is `[]`.
+
+// One rule: a target prefix, and the level it governs.
+//
+// The prefix `""` is the root rule and governs everything, which is how
+// a default is expressed without a second field of a different kind.
+pub struct LgRule
+    prefix: Str
+    level: LgLevel
+
+// A default level and the rules that override it.
+//
+// `default_level` is kept separate from a `""` rule on purpose: a
+// filter always HAS a default, and making it a rule that might not be
+// in the list would put an `?LgRule` and a fallback in every lookup.
+pub struct LgFilter
+    default_level: LgLevel
+    rules: [LgRule]
+
+// Why a filter specification did not parse.
+//
+// A spec is what arrives from `LOG` or `--log`, so it is written by a
+// person under time pressure and every one of these is a real typo
+// rather than a hypothetical.  The offset is a byte index into the spec
+// text, so a caller underlines the clause that was wrong instead of
+// rejecting the whole line.
+pub enum LgFilterFault
+    // A clause like `=debug` or `,,` — a level with nothing to govern.
+    LgSpecEmptyTarget(at: Int)
+    // A clause like `http=lowd` — a word that is not a level.  `text`
+    // is what was written, so the message can name it.
+    LgSpecUnknownLevel(at: Int, text: Str)
+    // A target with no `=` and no bare level reading, such as
+    // `http.server` on its own where a level was required.
+    LgSpecMissingLevel(at: Int, text: Str)
+    // The same target twice.  Refused rather than last-write-wins,
+    // because the two clauses are visibly adjacent in the text the
+    // person wrote and one of them is a mistake they can see.
+    LgSpecDuplicateTarget(at: Int, target: Str)
+
+// The standard `Error` implementation, so a bad specification can be
+// reported by anything that reports errors.
+impl Error for LgFilterFault
+    // One line: what was wrong with the specification, and where in it.
+    //
+    // The offset is in the message rather than left for the caller to
+    // add, because a filter spec has no other landmark — it is one line
+    // with no line numbers in it.
+    fn message(self) -> Str
+        todo("logging-core-nv.lgfilter.LgFilterFault.message")
+
+// A filter with a default level and no rules.
+//
+// ```novo
+// use lgfilter
+// use lgrecord
+//
+// fn main() [io]
+//     let f = lgfilter.filter(LgInfo)
+//     println(lgrecord.level_name(f.default_level))
+// ```
+pub fn filter(default_level: LgLevel) -> LgFilter []
+    todo("logging-core-nv.lgfilter.filter")
+
+// The same filter with one more rule.
+//
+// Adding a rule whose prefix is already present REPLACES it, which is
+// the opposite of what `parse_spec` does with a duplicate — and
+// deliberately so: a spec is one line a person wrote and a duplicate in
+// it is a mistake, while a program building a filter in code is
+// layering deliberate overrides and wants the later call to win.
+//
+// ```novo
+// use lgfilter
+// use lgrecord
+//
+// fn main() [io]
+//     let f = lgfilter.rule(lgfilter.filter(LgInfo), "http", LgError)
+//     println("${list.len(f.rules)}")
+// ```
+pub fn rule(f: LgFilter, prefix: Str, level: LgLevel) -> LgFilter []
+    todo("logging-core-nv.lgfilter.rule")
+
+// Would a record at this level, from this target, be emitted?
+//
+// The one call the emit path makes.
+//
+// ```novo
+// use lgfilter
+// use lgrecord
+//
+// fn main() [io]
+//     let f = lgfilter.rule(lgfilter.filter(LgInfo), "ml", LgWarn)
+//     let seen = lgfilter.allows(f, "ml.core", LgInfo)
+//     println("${seen}")
+// ```
+pub fn allows(f: LgFilter, target: Str, l: LgLevel) -> Bool []
+    todo("logging-core-nv.lgfilter.allows")
+
+// The threshold this filter applies to this target.
+//
+// `allows` is this compared with the record's level; the two are
+// separate calls because a logger resolves its target's level ONCE when
+// it is named and then compares an integer per line, which is the
+// saving the standard library's `Logger.named` also makes.
+//
+// ```novo
+// use lgfilter
+// use lgrecord
+//
+// fn main() [io]
+//     let f = lgfilter.rule(lgfilter.filter(LgInfo), "ml", LgWarn)
+//     println(lgrecord.level_name(lgfilter.level_for(f, "ml.core")))
+// ```
+pub fn level_for(f: LgFilter, target: Str) -> LgLevel []
+    todo("logging-core-nv.lgfilter.level_for")
+
+// The rule that governs this target, or `None` when the default does.
+//
+// For a `--log-explain`-shaped answer: a person whose debug lines are
+// not appearing wants to be told WHICH rule silenced them, and a
+// threshold alone cannot say.
+//
+// ```novo
+// use lgfilter
+//
+// fn main() [io]
+//     let f = lgfilter.rule(lgfilter.filter(LgInfo), "ml", LgWarn)
+//     match lgfilter.governing_rule(f, "ml.core")
+//         Some(r) => println(r.prefix)
+//         None    => println("the default")
+// ```
+pub fn governing_rule(f: LgFilter, target: Str) -> ?LgRule []
+    todo("logging-core-nv.lgfilter.governing_rule")
+
+// Does this prefix govern this target, by the segment rule?
+//
+// `""` governs everything; `"ml"` governs `ml` and `ml.core`; `"ml"`
+// does NOT govern `mlx`.  Published rather than internal because it is
+// the rule most often reimplemented wrongly, and a test that asserts on
+// it directly is worth more than three tests that assert on `allows`
+// and hope.
+//
+// ```novo
+// use lgfilter
+//
+// fn main() [io]
+//     let governs = lgfilter.prefix_governs("ml", "mlx")
+//     println("${governs}")
+// ```
+pub fn prefix_governs(prefix: Str, target: Str) -> Bool []
+    todo("logging-core-nv.lgfilter.prefix_governs")
+
+// A filter from the one-line specification a flag or an environment
+// variable carries.
+//
+// The grammar is the one Rust's `env_logger` made conventional and
+// which nothing else in this space disagrees with, because it is what
+// people already have in their shell history:
+//
+// - `info` — a bare level sets the default and adds no rule.
+// - `info,http=error,ml.core=debug` — comma-separated clauses, each
+//   `target=level` after the first.
+// - whitespace around a clause is ignored, so a spec pasted out of a
+//   YAML file works.
+//
+// What is deliberately NOT here: `env_logger`'s regular-expression
+// message filter.  A filter that matched on message TEXT would make the
+// gate depend on the rendered line, which is the thing this package
+// defers until after the gate.
+//
+// ```novo
+// use lgfilter
+//
+// fn main() [io]
+//     match lgfilter.parse_spec("info,http=error")
+//         Ok(f)  => println("${list.len(f.rules)}")
+//         Err(e) => println(e.message())
+// ```
+pub fn parse_spec(spec: Str) -> Result<LgFilter, LgFilterFault> []
+    todo("logging-core-nv.lgfilter.parse_spec")
+
+// The specification this filter is, as the one line that would parse
+// back to it.
+//
+// A round trip, so a program can print the filter it resolved — from a
+// flag, a file and a default — as one line a person can paste back.
+// The rules come out in longest-prefix-last order, which is stable and
+// independent of the order they were added.
+//
+// ```novo
+// use lgfilter
+//
+// fn main() [io]
+//     let f = lgfilter.rule(lgfilter.filter(LgInfo), "http", LgError)
+//     println(lgfilter.spec_of(f))
+// ```
+pub fn spec_of(f: LgFilter) -> Str []
+    todo("logging-core-nv.lgfilter.spec_of")
+
+// The loudest threshold anywhere in this filter.
+//
+// The cheap global gate: if a record's level is below this, no rule in
+// the filter can admit it, so a caller may skip building the record at
+// all.  That is the check a `debug!`-shaped macro would compile in, and
+// this package has no macros, so it is published as a function a hot
+// loop hoists.
+//
+// ```novo
+// use lgfilter
+// use lgrecord
+//
+// fn main() [io]
+//     let f = lgfilter.rule(lgfilter.filter(LgWarn), "ml", LgDebug)
+//     println(lgrecord.level_name(lgfilter.cheapest_gate(f)))
+// ```
+pub fn cheapest_gate(f: LgFilter) -> LgLevel []
+    todo("logging-core-nv.lgfilter.cheapest_gate")
+
+// Every rule in this filter that no target can ever reach.
+//
+// A rule is unreachable when a longer prefix with the same effect
+// already covers everything it covers — the shape a configuration file
+// grows after three people have edited it.  Reported rather than
+// removed, because removing a caller's rule silently is how a filter
+// stops matching what its author reads in the file.
+//
+// ```novo
+// use lgfilter
+//
+// fn main() [io]
+//     let f = lgfilter.rule(lgfilter.filter(LgInfo), "ml", LgInfo)
+//     println("${list.len(lgfilter.redundant_rules(f))}")
+// ```
+pub fn redundant_rules(f: LgFilter) -> [LgRule] []
+    todo("logging-core-nv.lgfilter.redundant_rules")

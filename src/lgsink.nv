@@ -1,0 +1,266 @@
+// lgsink.nv — the load-bearing interface: where a record goes, and what
+// putting it there costs.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// `LgSink[e]` IS THE PACKAGE.  Everything else here is a record, a
+// predicate or a string; this is the one declaration that crosses a
+// layer, and the effect parameter is why it can.  SPEC § 5.6 gives a
+// trait an effect parameter and a bound function may bind it, so
+// `emit_if<S: LgSink[e]>(…) [e]` is written ONCE and charged exactly
+// what the caller's own sink costs: `[io]` over a terminal, `[fs]` over
+// a rotating file, `[mutate]` over a ring buffer, and NOTHING at all
+// over the null sink or a buffer a test drains.
+//
+// WITHOUT THE PARAMETER, EVERY CALLER PAYS THE UNION.  The standard
+// library's `Logger` shows the cost exactly: `LogSink` is an enum, so
+// `Logger.info` is charged the union over its variants — `[io]` — "even
+// when the installed sink is `SinkNull`", as its own page says.  A
+// program that logs into a buffer and asserts on the bytes is charged
+// for a console it never touches, and a caller with no `[io]` to give
+// cannot log at all.  A trait with an effect parameter is the shape
+// that removes that, and it is the reason this package exists beside
+// `std.log` rather than wrapping it.
+//
+// THE SINK TAKES THE RECORD, NOT THE LINE.  The obvious surface is
+// `emit(self, line: Str)`, and it is wrong in two places.  A ring buffer
+// on a device would have to format on the target, which is the entire
+// cost the deferred-logging story exists to avoid — the device sends an
+// interned index and raw bytes precisely so that no formatter is linked
+// into the firmware.  And a sink that fans out to a terminal and a
+// collector would have to be handed the same record twice, pre-rendered
+// two different ways, by a caller that has no reason to know there are
+// two.  So the sink holds its own `LgFormat` and renders when and if it
+// writes.
+//
+// AND THE TRAIT IS HERE RATHER THAN IN logging-nv FOR THE ONE REASON
+// THIS PACKAGE EXISTS.  A `core` package may depend only on `core`
+// packages, so while this declaration sat in a `host` package the trait
+// designed to let a library log at `[]` was out of reach of exactly the
+// libraries it was designed for.  Every impl that PERFORMS something is
+// still over there — `LgStdSink` at `[io]`, `LgFileSink` at `[fs]`,
+// `LgRingSink` at `[mutate]` — because each of those rows is outside a
+// `core` budget by one label.  What is here is the declaration, the
+// generic emits that bind `[e]`, and the one impl that costs nothing.
+//
+// THREE METHODS, AND `accepts` IS THE THIRD FOR A REASON.  A sink knows
+// things a filter does not: a file that failed to open, a collector that
+// is off, a level floor configured on the sink itself.  Asking it before
+// building the record is what lets a caller skip the work, and it
+// carries `[e]` like the others because SPEC § 5.6 requires every member
+// of a parameterised trait to use the parameter — which is honest here
+// anyway, since answering may mean looking at a descriptor.
+
+use lgrecord
+
+// Why a record did not reach its destination.
+//
+// A SINK FAULT IS NOT A PROGRAM ERROR, and the split matters at the
+// call site: a logging call that answered `Result` and was `?`-ed would
+// make a failed log line abort the request it was describing, which is
+// never what anybody wants.  `emit` answers a `Result` so a caller CAN
+// look, and every shipped sink's own recovery — `std.log`'s "a failed
+// write is swallowed" — is a decision the caller makes by ignoring it,
+// visibly, rather than one this package makes for everybody.
+pub enum LgSinkFault
+    // The transport said no.  The `IoError` is kept rather than
+    // flattened to text, because a caller retrying on `IoInterrupted`
+    // and giving up on `IoBrokenPipe` is the ordinary shape and a
+    // string cannot be branched on.
+    LgSinkIo(cause: IoError)
+    // The sink was closed before this record arrived.
+    LgSinkClosed
+    // A bounded sink dropped records to take this one.  `dropped` is the
+    // count since the last successful `flush`, so a caller can emit one
+    // line saying how much it lost instead of losing it silently — which
+    // is what every ring buffer that returns `Ok` does.
+    LgSinkOverran(dropped: Int)
+    // The sink refused this particular record: a line longer than a
+    // datagram, a field the destination cannot carry.  `why` is for a
+    // person and `key` names the field when one is to blame.
+    LgSinkRefused(why: Str, key: Str)
+
+// The standard `Error` implementation, so a sink failure can be
+// reported by anything that reports errors.
+impl Error for LgSinkFault
+    // One line: which sink failed how, and what was lost.
+    //
+    // An overrun names the count, because "some log lines were dropped"
+    // is not actionable and "412 log lines were dropped" is.
+    fn message(self) -> Str
+        todo("logging-core-nv.lgsink.LgSinkFault.message")
+
+// Where a record goes.
+//
+// The trait binds one effect parameter, `e`, and every member uses it
+// (SPEC § 5.6 requires both).  An impl supplies the set its own
+// implementation actually costs: `impl LgSink[io] for LgStdSink`,
+// `impl LgSink[fs] for LgFileSink` and
+// `impl LgSink[mutate] for LgRingSink` are all logging-nv's, because
+// each of those rows is wider than this package's budget; `impl
+// LgSink[] for LgNullSink` is here, and so is any impl a `core`
+// consumer writes for itself.
+pub trait LgSink[e]
+    // Put this record where this sink puts records.
+    //
+    // A sink renders it itself, through its own `LgFormat`.
+    fn emit(self, r: LgRecord) -> Result<Unit, LgSinkFault> [e]
+    // Push anything the sink is holding.
+    //
+    // A no-op for an unbuffered sink; the call that matters on the way
+    // out of a program, and the call a panic handler makes before it
+    // halts.
+    fn flush(self) -> Result<Unit, LgSinkFault> [e]
+    // Would a record at this level be written?
+    //
+    // Asked before the record is built, so a caller can skip the work.
+    // A sink that cannot answer cheaply answers `true`.
+    fn accepts(self, l: LgLevel) -> Bool [e]
+
+// A sink that keeps nothing.
+//
+// `impl LgSink[]`, which is the point: a program built against the trait
+// can be run with no effects at all, and a `core`-shaped test of a
+// caller's logging can assert that the caller's own row did not widen.
+//
+// The floor is a field rather than the sink being unconditional,
+// because `accepts` is a member of the trait and a sink that always
+// answered `true` gives a test nothing to exercise the skip path with.
+// `null_sink()` sets it to `LgTrace`, which accepts everything.
+pub struct LgNullSink
+    min: LgLevel
+
+// The null sink performs nothing, which is what `[]` in the impl head
+// says and what the effect checker holds it to.
+impl LgSink[] for LgNullSink
+    // Discard the record.
+    fn emit(self, r: LgRecord) -> Result<Unit, LgSinkFault> []
+        todo("logging-core-nv.lgsink.LgNullSink.emit")
+
+    // Nothing is held, so nothing is pushed.
+    fn flush(self) -> Result<Unit, LgSinkFault> []
+        todo("logging-core-nv.lgsink.LgNullSink.flush")
+
+    // Everything is accepted and nothing is kept, which is a different
+    // answer from `false`: a caller measuring its own logging overhead
+    // wants the record built.
+    fn accepts(self, l: LgLevel) -> Bool []
+        todo("logging-core-nv.lgsink.LgNullSink.accepts")
+
+// The sink that keeps nothing.
+//
+// ```novo
+// use lgsink
+//
+// fn main() [io]
+//     let s = lgsink.null_sink()
+//     println("${s.accepts(LgInfo)}")
+// ```
+pub fn null_sink() -> LgNullSink []
+    todo("logging-core-nv.lgsink.null_sink")
+
+// The sink that keeps nothing and refuses below this level.
+//
+// What a test of a caller's own gating uses: the caller must not build
+// records this sink would refuse, and asserting that needs a sink that
+// refuses.
+//
+// ```novo
+// use lgsink
+//
+// fn main() [io]
+//     let s = lgsink.null_sink_at(LgWarn)
+//     println("${s.accepts(LgInfo)}")
+// ```
+pub fn null_sink_at(min: LgLevel) -> LgNullSink []
+    todo("logging-core-nv.lgsink.null_sink_at")
+
+// Emit this record if the filter and the sink both admit it, answering
+// whether it was written.
+//
+// THE ROW IS `[e]`: this call costs exactly what `S`'s own `LgSink` impl
+// costs, and that impl is declared where the sink is.  It is the whole
+// argument for the trait, written as one function.
+//
+// The filter is checked first and the sink second, because the filter
+// is arithmetic on two integers and the sink may look at a descriptor.
+//
+// ```novo
+// use lgfilter
+// use lgrecord
+// use lgsink
+//
+// fn note<S: lgsink.LgSink[e]>(to: S, f: LgFilter) -> Result<Bool, LgSinkFault> [e]
+//     lgsink.emit_if(to, f, lgrecord.record(LgInfo, "app", "started"))
+//
+// fn main() [io]
+//     println("a log call charged what the sink costs")
+// ```
+pub fn emit_if<S: LgSink[e]>(to: S, f: LgFilter, r: LgRecord) -> Result<Bool, LgSinkFault> [e]
+    todo("logging-core-nv.lgsink.emit_if")
+
+// Emit every record the filter admits, answering how many were written.
+//
+// Stops at the first fault and reports it, rather than writing the rest
+// into a sink that has already said it cannot: a half-drained batch
+// whose failure was swallowed is how a rotation bug becomes a missing
+// hour rather than an error.
+//
+// ```novo
+// use lgfilter
+// use lgsink
+//
+// fn drain<S: lgsink.LgSink[e]>(to: S, f: LgFilter,
+//                               rs: [LgRecord]) -> Result<Int, LgSinkFault> [e]
+//     lgsink.emit_all(to, f, rs)
+//
+// fn main() [io]
+//     println("a batch charged what the sink costs")
+// ```
+pub fn emit_all<S: LgSink[e]>(to: S, f: LgFilter, rs: [LgRecord]) -> Result<Int, LgSinkFault> [e]
+    todo("logging-core-nv.lgsink.emit_all")
+
+// Emit and then flush, for the caller that has one batch and no more.
+//
+// Published because "flush at the end" is the step everybody forgets
+// and the symptom — the last few seconds of a crashed process missing
+// from the file — is the hardest one to notice.
+//
+// ```novo
+// use lgfilter
+// use lgsink
+//
+// fn finish<S: lgsink.LgSink[e]>(to: S, f: LgFilter,
+//                                rs: [LgRecord]) -> Result<Int, LgSinkFault> [e]
+//     lgsink.emit_and_flush(to, f, rs)
+//
+// fn main() [io]
+//     println("the last batch, pushed")
+// ```
+pub fn emit_and_flush<S: LgSink[e]>(to: S, f: LgFilter,
+                                    rs: [LgRecord]) -> Result<Int, LgSinkFault> [e]
+    todo("logging-core-nv.lgsink.emit_and_flush")
+
+// What a fan-out did.
+//
+// Counts and an optional fault rather than a `Result`, because the
+// interesting outcome is PARTIAL — one sink took the batch and the
+// other did not — and a `Result` has exactly two shapes to put that in,
+// both of which lose a number the caller needs.
+//
+// THE GENERIC FAN-OUT IS ABSENT, and the reason is a language rule
+// rather than a preference: a function binds exactly ONE effect
+// parameter (E3005), so `fan_out<A: LgSink[e], B: LgSink[f]>` cannot be
+// written and a fan-out over two arbitrary sinks has no signature.
+// What exists instead is `lglog.emit_to_console_and_file`, where both
+// sink types are known and the row is the concrete `[io, fs]` that pair
+// costs.  A caller pairing two other sinks calls `emit_all` twice and
+// keeps its own counts; the traversal is the only thing lost.
+pub struct LgFanout
+    first_written: Int
+    second_written: Int
+    // The first fault either sink reported.
+    fault: ?LgSinkFault
+    // `0` when there was no fault, `1` for the first sink, `2` for the
+    // second.
+    faulted_sink: Int

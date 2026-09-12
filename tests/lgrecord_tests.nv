@@ -1,0 +1,148 @@
+// lgrecord_tests.nv — the level order, the typed field, and the record.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: logging-core-nv.lgrecord.<fn>`.
+//
+// WHAT THIS SUITE IS FOR.  Two of the three things here are the ones a
+// logging library gets wrong in a way nobody notices for months: the
+// level comparison written the wrong way round, so a threshold of
+// `warn` lets debug lines through; and the reserved JSON key, so a
+// caller's `msg` field silently produces an object with two `msg`
+// members and the collector keeps whichever its parser happened to
+// take.  Both are asserted directly rather than through a rendered
+// line.
+
+use std.test
+use std.list
+use lgrecord
+
+@test
+fn test_the_level_order_is_low_to_high_and_off_is_above_everything() [io]
+    test.case("the six levels are numbered in the order they are loud")
+    test.assert(lgrecord.level_num(LgTrace) < lgrecord.level_num(LgDebug))
+    test.assert(lgrecord.level_num(LgDebug) < lgrecord.level_num(LgInfo))
+    test.assert(lgrecord.level_num(LgInfo) < lgrecord.level_num(LgWarn))
+    test.assert(lgrecord.level_num(LgWarn) < lgrecord.level_num(LgError))
+
+    test.case("off is above error, so a record built at off passes no threshold")
+    test.assert(lgrecord.level_num(LgOff) > lgrecord.level_num(LgError))
+
+@test
+fn test_a_threshold_admits_what_is_at_least_as_loud() [io]
+    test.case("error clears a warn threshold")
+    test.assert(lgrecord.level_at_least(LgError, LgWarn))
+
+    test.case("a level clears its own threshold")
+    test.assert(lgrecord.level_at_least(LgWarn, LgWarn))
+
+    test.case("and debug does not clear warn — the comparison written the other way round")
+    test.assert(lgrecord.level_at_least(LgDebug, LgWarn) == false)
+
+@test
+fn test_a_level_has_a_lowercase_name_and_an_upright_tag() [io]
+    test.case("the name is what a JSON document and a filter spec both carry")
+    test.assert(lgrecord.level_name(LgWarn) == "warn")
+    test.assert(lgrecord.level_name(LgError) == "error")
+    test.assert(lgrecord.level_name(LgTrace) == "trace")
+
+    test.case("the tag is what the text format prints")
+    test.assert(lgrecord.level_tag(LgWarn) == "WARN")
+
+    test.case("and the two are different strings, which is why there are two functions")
+    test.assert(lgrecord.level_name(LgWarn) != lgrecord.level_tag(LgWarn))
+
+@test
+fn test_a_level_parses_from_what_a_person_types() [io]
+    test.case("the lowercase name")
+    test.assert(lgrecord.level_parse("warn") == Some(LgWarn))
+
+    test.case("the tag, in any case")
+    test.assert(lgrecord.level_parse("WARN") == Some(LgWarn))
+    test.assert(lgrecord.level_parse("Warn") == Some(LgWarn))
+
+    test.case("the spellings people actually write")
+    test.assert(lgrecord.level_parse("warning") == Some(LgWarn))
+    test.assert(lgrecord.level_parse("err") == Some(LgError))
+
+    test.case("a bare number, so LOG_LEVEL=2 works")
+    test.assert(lgrecord.level_parse("2") == Some(LgInfo))
+
+    test.case("and a typo is None rather than a silent default")
+    test.assert(lgrecord.level_parse("lowd") == None)
+
+@test
+fn test_a_field_keeps_its_type() [io]
+    test.case("each constructor builds the arm it names")
+    test.assert(lgrecord.value_kind(lgrecord.field_int("status", 200).value) == "int")
+    test.assert(lgrecord.value_kind(lgrecord.field_str("path", "/x").value) == "str")
+    test.assert(lgrecord.value_kind(lgrecord.field_float("s", 0.5).value) == "float")
+    test.assert(lgrecord.value_kind(lgrecord.field_bool("hit", true).value) == "bool")
+
+    test.case("a present-and-empty field is not the same as an absent one")
+    test.assert(lgrecord.value_kind(lgrecord.field_none("user").value) == "none")
+
+    test.case("and the key survives")
+    test.assert(lgrecord.field_int("status", 200).key == "status")
+
+@test
+fn test_a_record_starts_bare_and_is_built_up() [io]
+    let bare = lgrecord.record(LgInfo, "http.server", "request served")
+
+    test.case("the three arguments that have no default")
+    test.assert(bare.target == "http.server")
+    test.assert(bare.message == "request served")
+
+    test.case("no timestamp, no location, no fields")
+    test.assert(lgrecord.has_timestamp(bare) == false)
+    test.assert(list.len(bare.fields) == 0)
+    test.assert(bare.line == 0)
+
+    test.case("a stamp makes has_timestamp true")
+    test.assert(lgrecord.has_timestamp(lgrecord.stamped(bare, 1757548800.0)))
+
+    test.case("a zero stamp means none, which is the same convention std.log uses")
+    test.assert(lgrecord.has_timestamp(lgrecord.stamped(bare, 0.0)) == false)
+
+    test.case("a location is carried on the record rather than in the fields")
+    let located = lgrecord.located(bare, "src/app.nv", 42)
+    test.assert(located.line == 42)
+    test.assert(list.len(located.fields) == 0)
+
+@test
+fn test_fields_append_in_order_and_the_first_wins_a_lookup() [io]
+    let r = lgrecord.with_field(
+        lgrecord.with_fields(lgrecord.record(LgInfo, "app", "ok"),
+                             [lgrecord.field_str("run", "r-9")]),
+        lgrecord.field_str("run", "r-10"))
+
+    test.case("both are kept — nothing is silently replaced")
+    test.assert(list.len(r.fields) == 2)
+
+    test.case("and a lookup answers the first, which is the sticky one")
+    match lgrecord.field_of(r, "run")
+        Some(v) => test.assert(lgrecord.value_kind(v) == "str")
+        None    => test.assert(false)
+
+    test.case("a key nothing carries is None")
+    test.assert(lgrecord.field_of(r, "absent") == None)
+
+@test
+fn test_the_json_hazard_is_reported_rather_than_renamed() [io]
+    test.case("the four reserved keys are published as data")
+    test.assert(list.len(lgrecord.reserved_keys()) == 4)
+
+    test.case("a field named msg collides with the record's own key")
+    let clash = lgrecord.with_field(lgrecord.record(LgInfo, "app", "ok"),
+                                    lgrecord.field_str("msg", "again"))
+    test.assert(list.len(lgrecord.reserved_or_duplicate_keys(clash)) == 1)
+
+    test.case("the same key twice is reported too")
+    let twice = lgrecord.with_fields(lgrecord.record(LgInfo, "app", "ok"),
+                                     [lgrecord.field_int("n", 1),
+                                      lgrecord.field_int("n", 2)])
+    test.assert(list.len(lgrecord.reserved_or_duplicate_keys(twice)) == 1)
+
+    test.case("and an ordinary record reports nothing")
+    let clean = lgrecord.with_field(lgrecord.record(LgInfo, "app", "ok"),
+                                    lgrecord.field_int("status", 200))
+    test.assert(list.len(lgrecord.reserved_or_duplicate_keys(clean)) == 0)

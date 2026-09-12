@@ -1,0 +1,125 @@
+// lgsink_tests.nv — the trait, and the claim its effect parameter makes.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: logging-core-nv.lgsink.<fn>`.
+//
+// THE INTERESTING ASSERTION IS THE ONE THE COMPILER MAKES.  `log_to`
+// below is declared `[]` and calls `emit_if` with a sink whose impl
+// supplies `[]`; if the effect parameter did not do what this package
+// claims, that function would not compile at all, and the suite would be
+// red for a reason no `test.assert` could express.  The assertions here
+// are the behaviour; the signature is the proof.
+
+use std.test
+use lgfilter
+use lgrecord
+use lgsink
+
+// A caller that logs and performs NOTHING.  The row is `[]`, and it is
+// the whole argument for the trait: this function could not be written
+// against an enum sink, because an enum is charged the union over its
+// variants and `[io]` is in that union.
+//
+// The sink type is named rather than bound, because a bound carries the
+// effect PARAMETER and this assertion is about a concrete supply: the
+// null sink's impl is `[]`, so `emit_if` at this call site costs
+// nothing, and the clause below says so where the checker can refuse it.
+fn log_to(to: LgNullSink, f: LgFilter, r: LgRecord) -> Bool []
+    match lgsink.emit_if(to, f, r)
+        Ok(written) => written
+        Err(_)      => false
+
+@test
+fn test_a_pure_caller_can_log_through_the_trait() [io]
+    let f = lgfilter.filter(LgInfo)
+    let r = lgrecord.record(LgInfo, "app", "started")
+
+    test.case("a sink whose impl is [] lets a [] caller log")
+    test.assert(log_to(lgsink.null_sink(), f, r))
+
+    test.case("and the filter still governs it")
+    test.assert(log_to(lgsink.null_sink(), f, lgrecord.record(LgDebug, "app", "quiet")) == false)
+
+@test
+fn test_the_null_sink_accepts_everything_by_default() [io]
+    let s = lgsink.null_sink()
+
+    test.case("everything, because a caller measuring its own overhead wants the record built")
+    test.assert(s.accepts(LgTrace))
+    test.assert(s.accepts(LgError))
+
+@test
+fn test_a_floored_null_sink_refuses_below_its_floor() [io]
+    let s = lgsink.null_sink_at(LgWarn)
+
+    test.case("at the floor and above")
+    test.assert(s.accepts(LgWarn))
+    test.assert(s.accepts(LgError))
+
+    test.case("and below it, which is what gives a test of a caller's gating something to exercise")
+    test.assert(s.accepts(LgInfo) == false)
+
+@test
+fn test_emit_if_answers_whether_it_wrote_rather_than_failing_when_it_did_not() [io]
+    let f = lgfilter.rule(lgfilter.filter(LgInfo), "ml", LgWarn)
+
+    test.case("a record the filter admits is written")
+    match lgsink.emit_if(lgsink.null_sink(), f, lgrecord.record(LgError, "ml.core", "boom"))
+        Ok(written) => test.assert(written)
+        Err(_)      => test.assert(false)
+
+    test.case("a record the filter refuses is Ok(false), not an error")
+    match lgsink.emit_if(lgsink.null_sink(), f, lgrecord.record(LgInfo, "ml.core", "chatter"))
+        Ok(written) => test.assert(written == false)
+        Err(_)      => test.assert(false)
+
+@test
+fn test_a_batch_counts_what_it_wrote() [io]
+    let f = lgfilter.filter(LgInfo)
+    let rs = [lgrecord.record(LgInfo, "app", "one"),
+              lgrecord.record(LgDebug, "app", "filtered"),
+              lgrecord.record(LgWarn, "app", "two")]
+
+    test.case("only the records the filter admits are counted")
+    match lgsink.emit_all(lgsink.null_sink(), f, rs)
+        Ok(n)  => test.assert(n == 2)
+        Err(_) => test.assert(false)
+
+    test.case("an empty batch is zero and not a failure")
+    match lgsink.emit_all(lgsink.null_sink(), f, [])
+        Ok(n)  => test.assert(n == 0)
+        Err(_) => test.assert(false)
+
+@test
+fn test_emit_and_flush_is_the_call_at_the_end_of_a_program() [io]
+    let f = lgfilter.filter(LgInfo)
+
+    test.case("it writes the batch and pushes what the sink holds")
+    match lgsink.emit_and_flush(lgsink.null_sink(), f,
+                                [lgrecord.record(LgInfo, "app", "last")])
+        Ok(n)  => test.assert(n == 1)
+        Err(_) => test.assert(false)
+
+@test
+fn test_a_fault_names_what_was_lost() [io]
+    test.case("an overrun names the count, because a number is actionable and a word is not")
+    let e = LgSinkOverran(412)
+    test.assert(e.message() != "")
+
+    test.case("a refusal names the field when one is to blame")
+    let r = LgSinkRefused("value longer than one datagram", "body")
+    test.assert(r.message() != "")
+
+    test.case("and two different faults do not read the same")
+    test.assert(e.message() != r.message())
+
+@test
+fn test_a_fan_out_result_can_say_that_one_half_worked() [io]
+    let partial = LgFanout { first_written: 3, second_written: 0,
+                             fault: Some(LgSinkClosed), faulted_sink: 2 }
+
+    test.case("the count the working sink managed survives the other one's failure")
+    test.assert(partial.first_written == 3)
+
+    test.case("and the fault names which sink it was, which a Result could not carry")
+    test.assert(partial.faulted_sink == 2)

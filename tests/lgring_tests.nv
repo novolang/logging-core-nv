@@ -1,0 +1,126 @@
+// lgring_tests.nv — the last N records, and what a full one does.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: logging-core-nv.lgring.<fn>`.
+//
+// THE PROPERTY WORTH ASSERTING is that an overrun is COUNTED.  A ring
+// that silently drops the oldest is correct and a ring that does not say
+// how many it dropped makes a dump unreadable: a reader who is not told
+// that nine thousand records were discarded reads the remaining thousand
+// as the whole story.
+
+use std.test
+use std.list
+use lgrecord
+use lgring
+use lgsink
+
+fn note(n: Int) -> LgRecord
+    lgrecord.record(LgInfo, "app", "line ${n}")
+
+@test
+fn test_a_new_ring_is_empty_and_has_dropped_nothing() [io]
+    let rg = lgring.ring(4)
+
+    test.case("the capacity is what was asked for")
+    test.assert(rg.cap == 4)
+
+    test.case("nothing in it")
+    test.assert(lgring.len(rg) == 0)
+    test.assert(lgring.is_full(rg) == false)
+
+    test.case("and nothing lost")
+    test.assert(lgring.dropped_count(rg) == 0)
+
+@test
+fn test_a_ring_fills_before_it_drops() [io]
+    var rg = lgring.ring(2)
+    rg = lgring.push(rg, note(1))
+    rg = lgring.push(rg, note(2))
+
+    test.case("two records in a ring of two")
+    test.assert(lgring.len(rg) == 2)
+    test.assert(lgring.is_full(rg))
+
+    test.case("and nothing has been dropped yet")
+    test.assert(lgring.dropped_count(rg) == 0)
+
+@test
+fn test_a_full_ring_drops_the_oldest_and_counts_it() [io]
+    var rg = lgring.ring(2)
+    rg = lgring.push(rg, note(1))
+    rg = lgring.push(rg, note(2))
+    rg = lgring.push(rg, note(3))
+
+    test.case("the length is still the capacity")
+    test.assert(lgring.len(rg) == 2)
+
+    test.case("the drop is counted rather than silent")
+    test.assert(lgring.dropped_count(rg) == 1)
+
+    test.case("and the oldest is the one that went")
+    let held = lgring.snapshot(rg)
+    test.assert(list.len(held) == 2)
+
+@test
+fn test_a_snapshot_looks_and_a_drain_takes() [io]
+    var rg = lgring.ring(4)
+    rg = lgring.push(rg, note(1))
+
+    test.case("a snapshot leaves the ring holding what it held")
+    test.assert(list.len(lgring.snapshot(rg)) == 1)
+    test.assert(lgring.len(rg) == 1)
+
+    test.case("a drain answers the records AND the emptied ring in one call")
+    let (taken, empty) = lgring.drain(rg)
+    test.assert(list.len(taken) == 1)
+    test.assert(lgring.len(empty) == 0)
+
+    test.case("and the emptied ring keeps its capacity")
+    test.assert(empty.cap == 4)
+
+@test
+fn test_clearing_resets_the_drop_count_too() [io]
+    var rg = lgring.ring(1)
+    rg = lgring.push(rg, note(1))
+    rg = lgring.push(rg, note(2))
+
+    test.case("a drop was counted")
+    test.assert(lgring.dropped_count(rg) == 1)
+
+    test.case("and clearing starts the accounting over")
+    test.assert(lgring.dropped_count(lgring.clear(rg)) == 0)
+    test.assert(lgring.len(lgring.clear(rg)) == 0)
+
+@test
+fn test_a_ring_of_zero_capacity_keeps_nothing_and_says_so() [io]
+    var rg = lgring.ring(0)
+    rg = lgring.push(rg, note(1))
+
+    test.case("nothing is held")
+    test.assert(lgring.len(rg) == 0)
+
+    test.case("and the record is counted as dropped rather than vanishing")
+    test.assert(lgring.dropped_count(rg) == 1)
+
+// THE SINK HALF IS NOT HERE.  `LgRingSink` declares
+// `impl LgSink[mutate]`, and `[mutate]` is outside a `core` package's
+// budget, so it stays in logging-nv along with `ring_sink`, `ring_in`
+// and `drain_in`.  What this package holds is the ring as a VALUE,
+// which is the half a `core` library can reach.
+
+fn spill(rg: LgRing) -> Result<Int, LgSinkFault> []
+    lgring.dump_into(rg, lgsink.null_sink())
+
+@test
+fn test_a_dump_into_a_pure_sink_costs_nothing() [io]
+    var rg = lgring.ring(2)
+    rg = lgring.push(rg, note(1))
+
+    test.case("the row is the destination's, and the null sink's is empty")
+    match spill(rg)
+        Ok(n)  => test.assert(n == 1)
+        Err(_) => test.assert(false)
+
+    test.case("and the ring still holds what it held, because a dump does not empty it")
+    test.assert(lgring.len(rg) == 1)

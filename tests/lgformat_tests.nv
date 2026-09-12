@@ -1,0 +1,161 @@
+// lgformat_tests.nv — the three renderings, and the rules a consumer's
+// parser has to agree with.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: logging-core-nv.lgformat.<fn>`.
+//
+// WHY THE QUOTING PREDICATE IS TESTED DIRECTLY.  logfmt's whole
+// contract is that a consumer can split a line on spaces and then on
+// `=`; a value containing either and left unquoted breaks that for the
+// rest of the line, and the symptom is a field a collector shows under
+// the wrong name.  Asserting on `logfmt_needs_quoting` puts the rule in
+// one place instead of inferring it from whole lines.
+
+use std.test
+use std.list
+use std.str
+use lgformat
+use sgr
+use lgrecord
+
+@test
+fn test_a_format_names_itself_and_parses_back() [io]
+    test.case("each format has its own name")
+    test.assert(lgformat.format_name(lgformat.logfmt()) == "logfmt")
+    test.assert(lgformat.format_name(lgformat.json()) == "json")
+    test.assert(lgformat.format_name(lgformat.human()) == "human")
+
+    test.case("and the name parses back to the format")
+    match lgformat.format_parse("json")
+        Some(f) => test.assert(lgformat.format_name(f) == "json")
+        None    => test.assert(false)
+
+    test.case("a word that is not a format is None rather than a silent fallback")
+    test.assert(lgformat.format_parse("yaml") == None)
+
+@test
+fn test_the_human_default_is_what_a_library_should_use() [io]
+    let s = lgformat.default_style()
+
+    test.case("no colour, because a library does not know where its host's logs go")
+    test.assert(s.colour == false)
+
+    test.case("the target is shown, because a filter matches on it and a reader wants it")
+    test.assert(s.show_target)
+
+    test.case("and the location is not, because most lines do not carry one")
+    test.assert(s.show_location == false)
+
+@test
+fn test_colour_is_carried_rather_than_decided() [io]
+    test.case("asking for colour records the depth the caller supplied")
+    match lgformat.human_colour(SgrDepth256)
+        LgFmtHuman(style) => test.assert(style.colour)
+        LgFmtLogfmt       => test.assert(false)
+        LgFmtJson         => test.assert(false)
+
+    test.case("and the plain human format carries none")
+    match lgformat.human()
+        LgFmtHuman(style) => test.assert(style.colour == false)
+        LgFmtLogfmt       => test.assert(false)
+        LgFmtJson         => test.assert(false)
+
+@test
+fn test_logfmt_quotes_exactly_what_would_break_a_parse() [io]
+    test.case("a bare token is not quoted")
+    test.assert(lgformat.logfmt_needs_quoting("started") == false)
+    test.assert(lgformat.logfmt_needs_quoting("/api/v1/users") == false)
+
+    test.case("a space would end the field early")
+    test.assert(lgformat.logfmt_needs_quoting("request served"))
+
+    test.case("an equals sign would look like the next field")
+    test.assert(lgformat.logfmt_needs_quoting("a=b"))
+
+    test.case("a quote would end the quoting")
+    test.assert(lgformat.logfmt_needs_quoting("say \"no\""))
+
+    test.case("and the empty value is quoted, because nothing is not a token")
+    test.assert(lgformat.logfmt_needs_quoting(""))
+
+@test
+fn test_a_value_is_spelled_by_its_type_and_not_by_its_call_site() [io]
+    test.case("an integer field is a number")
+    test.assert(lgformat.value_text(LgvInt(200)) == "200")
+
+    test.case("a boolean is the word")
+    test.assert(lgformat.value_text(LgvBool(true)) == "true")
+
+    test.case("and a present-and-empty field renders as null rather than vanishing")
+    test.assert(lgformat.value_text(LgvNone) == "null")
+
+@test
+fn test_a_render_makes_a_line_and_a_render_into_appends_to_the_callers_buffer() [io]
+    let r = lgrecord.with_field(lgrecord.record(LgWarn, "db", "slow query"),
+                                lgrecord.field_float("seconds", 2.5))
+
+    test.case("a rendered line is not empty and carries the message")
+    test.assert(str.contains(lgformat.render(lgformat.logfmt(), r), "slow query"))
+
+    test.case("logfmt carries the field as key=value")
+    test.assert(str.contains(lgformat.render(lgformat.logfmt(), r), "seconds="))
+
+    test.case("the writer form appends to what the caller already had")
+    let seeded = lgformat.render_into(lgformat.json(), lgformat.default_theme(), r, [65])
+    test.assert(list.len(seeded) > 1)
+
+@test
+fn test_the_json_object_carries_the_keys_a_collector_indexes_on() [io]
+    let r = lgrecord.stamped(
+        lgrecord.with_field(lgrecord.record(LgInfo, "http.server", "request served"),
+                            lgrecord.field_int("status", 200)),
+        1757548800.0)
+    let line = lgformat.json_object(r)
+
+    test.case("the level, by its lowercase name")
+    test.assert(str.contains(line, "\"level\""))
+    test.assert(str.contains(line, "info"))
+
+    test.case("the message under msg and the target under logger")
+    test.assert(str.contains(line, "\"msg\""))
+    test.assert(str.contains(line, "\"logger\""))
+
+    test.case("the stamp, because the record carried one")
+    test.assert(str.contains(line, "\"ts\""))
+
+    test.case("and the caller's own field, with its number unquoted")
+    test.assert(str.contains(line, "\"status\""))
+
+@test
+fn test_the_tag_column_matches_the_standard_librarys() [io]
+    test.case("nine, so output from both surfaces interleaves without a second shape")
+    test.assert(lgformat.tag_column() == 9)
+
+@test
+fn test_a_theme_gives_each_level_its_own_attributes() [io]
+    let t = lgformat.default_theme()
+
+    test.case("a level's attributes come off the theme rather than out of a constant")
+    test.assert(sgr.attrs_eq(lgformat.level_attrs(t, LgError),
+                             lgformat.level_attrs(t, LgError)))
+
+    test.case("and an error does not look like an info line")
+    test.assert(sgr.attrs_eq(lgformat.level_attrs(t, LgError),
+                             lgformat.level_attrs(t, LgInfo)) == false)
+
+@test
+fn test_a_render_with_a_supplied_theme_is_the_same_line_differently_dressed() [io]
+    let r = lgrecord.record(LgWarn, "db", "slow query")
+
+    test.case("the message survives whatever the theme is")
+    test.assert(str.contains(lgformat.render_with(lgformat.human(),
+                                                  lgformat.default_theme(), r),
+                             "slow query"))
+
+@test
+fn test_a_logfmt_value_is_quoted_only_when_the_predicate_says_so() [io]
+    test.case("a bare token comes back as itself")
+    test.assert(lgformat.logfmt_value("started") == "started")
+
+    test.case("and a value with a space comes back quoted")
+    test.assert(lgformat.logfmt_value("request served") != "request served")

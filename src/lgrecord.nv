@@ -1,0 +1,428 @@
+// lgrecord.nv — the thing that travels: a level, a target, a message,
+// a time and typed fields.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A RECORD IS A VALUE AND NOT A STRING.  The whole difference between
+// structured logging and printing is that the decision "what does this
+// look like" is made after the decision "what happened", by somebody
+// else, possibly twice — the same line goes to a terminal in colour and
+// to a file as JSON.  A library that handed its sink a rendered `Str`
+// has already made that decision on its caller's behalf and there is no
+// way back: a JSON consumer cannot recover `depth=512` from the middle
+// of a sentence.
+//
+// A FIELD VALUE IS TYPED, and that is the correction of the standard
+// library's `Logger`, whose field values are `Str`.  The failure the
+// type prevents is specific and expensive: one call site writes
+// `("status", "200")` and another writes `("status", str.from_int(200))`
+// from an `Int` that was `200.0`, and the index on the consuming side
+// sees a string on one line and a number on the next, so the field
+// stops being aggregatable and nobody notices for a month.  With
+// `LgvInt(200)` the renderer decides the spelling, once, per format.
+//
+// EMITTING NEVER READS THE CLOCK.  `ts_unix` is a parameter, exactly as
+// `std.log`'s `render_at` makes it, because `time.now()` is `[time]` and
+// effects are static: a record constructor that stamped itself would
+// charge `[time]` to every caller whether or not stamps were on, and to
+// a `core` caller that has no clock at all.  A handler that reads the
+// clock once and stamps a batch pays for one clock read, and `[time]`
+// appears where it is earned.  `0.0` means "no timestamp", which is the
+// same convention `std.log` already uses.
+//
+// NOTHING HERE PERFORMS ANYTHING.  Every row in this module is `[]`.
+
+// How loud a record is.
+//
+// SIX, WHERE THE STANDARD LIBRARY HAS FIVE.  `std.log`'s `LogLevel` is
+// `LvDebug | LvInfo | LvWarn | LvError | LvOff`; `LgTrace` is the one
+// this adds, and it is not decoration.  Rust's `log` and `tracing`, the
+// `deflog-*` packages on this registry and syslog before all of them
+// have six, so a record crossing any of those boundaries has nowhere to
+// put a trace line except `LgDebug` — and then a filter set to "debug
+// but not trace", which is the ordinary way to debug a busy service,
+// cannot be expressed.
+//
+// `LgOff` is a threshold and never a record's level.  `record()` refuses
+// nothing, because a refusal here would be a `Result` on the hottest
+// call in the package; `level_num(LgOff)` is above every other level, so
+// a record built at `LgOff` is filtered out by every filter rather than
+// being a special case in the emit path.
+pub enum LgLevel
+    // The lines that exist to prove a loop ran.
+    LgTrace
+    // What a person debugging this program wants.
+    LgDebug
+    // What a person operating this program wants.
+    LgInfo
+    // Something a person should know about that the program handled.
+    LgWarn
+    // Something the program did not handle.
+    LgError
+    // A threshold, not a level: silences everything.
+    LgOff
+
+// The level as a number, low to high, `LgTrace` at 0 and `LgOff` at 5.
+//
+// The order is the whole point — `level_at_least` is a comparison on
+// these — and the numbers are published rather than internal because a
+// `--log-level 2` flag and a stored configuration value both need one.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     println("${lgrecord.level_num(LgWarn)}")
+// ```
+pub fn level_num(l: LgLevel) -> Int []
+    todo("logging-core-nv.lgrecord.level_num")
+
+// The level as the one lowercase word a person types and a JSON
+// document carries: `"trace"`, `"debug"`, `"info"`, `"warn"`,
+// `"error"`, `"off"`.
+//
+// Lowercase because that is what every consumer in this space indexes
+// on, and because a filter spec and a JSON `level` value that disagreed
+// about case would be two vocabularies for one fact.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     println(lgrecord.level_name(LgWarn))
+// ```
+pub fn level_name(l: LgLevel) -> Str []
+    todo("logging-core-nv.lgrecord.level_name")
+
+// The level as the bracketed tag the text format prints: `"TRACE"`,
+// `"DEBUG"`, `"INFO"`, `"WARN"`, `"ERROR"`.
+//
+// Separate from `level_name` because the two are read by different
+// parties and drift independently: the tag is padded into a column for
+// a person, the name is a token for a machine, and a package that made
+// them one function would have to pick which reader to disappoint.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     println(lgrecord.level_tag(LgError))
+// ```
+pub fn level_tag(l: LgLevel) -> Str []
+    todo("logging-core-nv.lgrecord.level_tag")
+
+// A level from what a person typed, or `None`.
+//
+// Case-insensitive over the names and the tags, and it also accepts a
+// bare number so `LOG_LEVEL=2` works.  `None` rather than a default,
+// because a typo silently running at the wrong verbosity is the bug
+// this signature exists to prevent — the caller reports it.
+//
+// `"warning"` is accepted as `LgWarn` and `"err"` as `LgError`, since
+// those are what people write and refusing them teaches nobody
+// anything.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     match lgrecord.level_parse("WARN")
+//         Some(l) => println(lgrecord.level_name(l))
+//         None    => println("not a level")
+// ```
+pub fn level_parse(text: Str) -> ?LgLevel []
+    todo("logging-core-nv.lgrecord.level_parse")
+
+// Would a record at `l` pass a threshold of `floor`?
+//
+// One function rather than an inequality at every call site, because
+// the comparison is the wrong way round half the time it is written by
+// hand: a HIGHER number is LOUDER, so a threshold passes what is at
+// least as loud as it is.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     println("${lgrecord.level_at_least(LgError, LgWarn)}")
+// ```
+pub fn level_at_least(l: LgLevel, floor: LgLevel) -> Bool []
+    todo("logging-core-nv.lgrecord.level_at_least")
+
+// One field's value, with its type kept.
+//
+// Five arms and no `Any`.  `Any` would make the renderer a run-time
+// walk over whatever arrived and would let a caller put a struct in a
+// field, which a JSON line cannot carry and a logfmt line cannot carry
+// at all; these five are exactly what every structured-logging wire
+// format has in common.
+//
+// `LgvNone` is a field that is PRESENT and has no value — a key the
+// caller wanted in the output with nothing to say about it.  It is not
+// the same as the field being absent, and a formatter renders it as
+// `null` in JSON and as an empty value in logfmt, so a consumer can
+// tell "we looked and there was nothing" from "we did not look".
+pub enum LgValue
+    LgvStr(v: Str)
+    LgvInt(v: Int)
+    LgvFloat(v: Float)
+    LgvBool(v: Bool)
+    LgvNone
+
+// The value's own type name — `"str"`, `"int"`, `"float"`, `"bool"`,
+// `"none"`.
+//
+// What a consumer that is checking a field's type across a run needs,
+// and what an error message about a mistyped field says.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     println(lgrecord.value_kind(LgvInt(512)))
+// ```
+pub fn value_kind(v: LgValue) -> Str []
+    todo("logging-core-nv.lgrecord.value_kind")
+
+// One key and one value.
+pub struct LgField
+    key: Str
+    value: LgValue
+
+// Build a field whose value is text.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     let f = lgrecord.field_str("path", "/api/v1/users")
+//     println(f.key)
+// ```
+pub fn field_str(key: Str, v: Str) -> LgField []
+    todo("logging-core-nv.lgrecord.field_str")
+
+// Build a field whose value is a whole number.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     let f = lgrecord.field_int("status", 200)
+//     println(f.key)
+// ```
+pub fn field_int(key: Str, v: Int) -> LgField []
+    todo("logging-core-nv.lgrecord.field_int")
+
+// Build a field whose value is a real number.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     let f = lgrecord.field_float("seconds", 0.25)
+//     println(f.key)
+// ```
+pub fn field_float(key: Str, v: Float) -> LgField []
+    todo("logging-core-nv.lgrecord.field_float")
+
+// Build a field whose value is true or false.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     let f = lgrecord.field_bool("cached", true)
+//     println(f.key)
+// ```
+pub fn field_bool(key: Str, v: Bool) -> LgField []
+    todo("logging-core-nv.lgrecord.field_bool")
+
+// Build a field that is present and empty.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     let f = lgrecord.field_none("user")
+//     println(f.key)
+// ```
+pub fn field_none(key: Str) -> LgField []
+    todo("logging-core-nv.lgrecord.field_none")
+
+// One thing that happened.
+//
+// `target` is the dotted name the filter matches on — `"http.server"`,
+// `"ml.core"` — and it is a name the CALLER chooses rather than a module
+// path the compiler injects.  The standard library made the same
+// decision and its reasons hold here: a prelude module has no module
+// path, an aliased import makes the call-site spelling ambiguous, and
+// the axis people actually tune is a subsystem, which is routinely
+// finer or coarser than one module.
+//
+// `file` and `line` are `""` and `0` when the caller did not supply
+// them.  They are on the record rather than in the fields because every
+// format has a place for them and none of them wants them mixed in with
+// a caller's own keys.
+pub struct LgRecord
+    level: LgLevel
+    target: Str
+    message: Str
+    // Unix epoch seconds, `0.0` for "no timestamp".  Epoch rather than
+    // a formatted string because it is unambiguous without a timezone
+    // and sorts as a number.
+    ts_unix: Float
+    fields: [LgField]
+    file: Str
+    line: Int
+
+// A record: a level, a target and a message, with no fields, no
+// timestamp and no location.
+//
+// The three arguments are the three that have no sensible default. Everything
+// else is added by a `with_*` call, so the common case is one call and
+// the uncommon ones are visible at the call site.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     let r = lgrecord.record(LgInfo, "http.server", "request served")
+//     println(r.message)
+// ```
+pub fn record(level: LgLevel, target: Str, message: Str) -> LgRecord []
+    todo("logging-core-nv.lgrecord.record")
+
+// The same record with these fields appended, in order.
+//
+// Appended rather than replacing, so a logger's sticky fields and a
+// call's own fields compose by two calls in the obvious order.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     let r = lgrecord.with_fields(
+//         lgrecord.record(LgInfo, "http.server", "request served"),
+//         [lgrecord.field_int("status", 200)])
+//     println("${list.len(r.fields)}")
+// ```
+pub fn with_fields(r: LgRecord, fs: [LgField]) -> LgRecord []
+    todo("logging-core-nv.lgrecord.with_fields")
+
+// The same record with one more field.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     let r = lgrecord.with_field(
+//         lgrecord.record(LgWarn, "db", "slow query"),
+//         lgrecord.field_float("seconds", 2.5))
+//     println(r.target)
+// ```
+pub fn with_field(r: LgRecord, f: LgField) -> LgRecord []
+    todo("logging-core-nv.lgrecord.with_field")
+
+// The same record stamped with a time the caller read.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     let r = lgrecord.stamped(
+//         lgrecord.record(LgInfo, "app", "started"), 1757548800.0)
+//     println("${r.ts_unix}")
+// ```
+pub fn stamped(r: LgRecord, ts_unix: Float) -> LgRecord []
+    todo("logging-core-nv.lgrecord.stamped")
+
+// The same record with a source location.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     let r = lgrecord.located(
+//         lgrecord.record(LgError, "app", "unreachable"), "src/app.nv", 42)
+//     println("${r.line}")
+// ```
+pub fn located(r: LgRecord, file: Str, line: Int) -> LgRecord []
+    todo("logging-core-nv.lgrecord.located")
+
+// The first value stored under this key, or `None`.
+//
+// First rather than last, because fields are appended in the order they
+// were attached and the sticky ones come first: a logger-wide `run` id
+// is what a reader means by "the run id", and a later call that reused
+// the key has not replaced it.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     let r = lgrecord.with_field(
+//         lgrecord.record(LgInfo, "app", "ok"),
+//         lgrecord.field_int("status", 200))
+//     match lgrecord.field_of(r, "status")
+//         Some(v) => println(lgrecord.value_kind(v))
+//         None    => println("absent")
+// ```
+pub fn field_of(r: LgRecord, key: Str) -> ?LgValue []
+    todo("logging-core-nv.lgrecord.field_of")
+
+// Does this record carry a timestamp?
+//
+// `ts_unix > 0.0`, published as a predicate so that the "`0.0` means
+// none" convention is stated once rather than copied into every
+// formatter.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     let r = lgrecord.record(LgInfo, "app", "started")
+//     println("${lgrecord.has_timestamp(r)}")
+// ```
+pub fn has_timestamp(r: LgRecord) -> Bool []
+    todo("logging-core-nv.lgrecord.has_timestamp")
+
+// Every key this record carries more than once, and every key that
+// collides with a name the JSON format reserves.
+//
+// PUBLISHED RATHER THAN FIXED, and that is the same decision the
+// standard library made: a field named `level`, `logger`, `msg` or `ts`
+// appears twice in the JSON object and this package does not rename it,
+// because silently renaming a caller's key is worse than a duplicate a
+// check can see.  This is the check.
+//
+// A test asserts on it, and `novo lint`-shaped tooling can too, which
+// is what makes the convention enforceable at the edge of a program
+// rather than a paragraph in a README.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     let r = lgrecord.with_field(
+//         lgrecord.record(LgInfo, "app", "ok"),
+//         lgrecord.field_int("level", 1))
+//     println("${list.len(lgrecord.reserved_or_duplicate_keys(r))}")
+// ```
+pub fn reserved_or_duplicate_keys(r: LgRecord) -> [Str] []
+    todo("logging-core-nv.lgrecord.reserved_or_duplicate_keys")
+
+// The four key names the JSON format uses for the record's own facts:
+// `level`, `logger`, `msg`, `ts`.
+//
+// Data rather than a branch inside the formatter, so the check above
+// and the renderer cannot come to different answers about what is
+// reserved.
+//
+// ```novo
+// use lgrecord
+//
+// fn main() [io]
+//     println("${list.len(lgrecord.reserved_keys())}")
+// ```
+pub fn reserved_keys() -> [Str] []
+    todo("logging-core-nv.lgrecord.reserved_keys")
