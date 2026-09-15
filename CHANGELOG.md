@@ -5,6 +5,10 @@ All notable changes to logging-core-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.0.2 — 2026-09-15
+
+README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.
+
 ## 0.0.1 — 2026-09-12
 
 The **interface**: every signature and every effect row, and no bodies.
@@ -42,3 +46,21 @@ The **interface**: every signature and every effect row, and no bodies.
   caller gets is the null sink, the ring as a value, and `dump_into`.
 - **No device claim.**  A record holds a `Str` and a list; what a device
   logs is deflog's interned index, and the conversion is host-side.
+
+### Design notes
+
+- `LgSinkFault` names `IoError`, which is a standard library type and
+  costs a `core` consumer no effects.  A fault type that dragged an
+  effect into the layer's budget would have prevented the split.
+- `lgring.dump_into` is published here although every sink it can reach
+  today lives in logging-nv.  The function itself costs nothing, and the
+  caller pays for the sink it brought.  That is what a bound effect
+  parameter is for.
+- logging-nv's next version adds one dependency line on this package and
+  deletes `src/lgrecord.nv`, `src/lgfilter.nv`, `src/lgformat.nv` and
+  `src/lgsink.nv`, which then resolve through the dependency.  Its
+  `layer = "host"` is unchanged.  Two packages may not both ship a
+  module named `lgring`, so logging-nv's remaining three ring functions
+  (`ring_sink`, `ring_in`, `drain_in`) need a module of their own;
+  `lgslot` is the suggested name, and moving those three is three call
+  sites rather than the nine the other split would move.
