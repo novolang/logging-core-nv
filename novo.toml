@@ -1,7 +1,7 @@
 [package]
 name        = "logging-core-nv"
 license     = "Apache-2.0"
-version     = "0.0.2"
+version     = "0.0.3"
 description = "The half of structured logging a core library can reach: the record with typed fields, the levels, the longest-prefix filter and its specification grammar, the human/logfmt/JSON-lines formatters into a caller's buffer, the LgSink[e] trait declaration with the null sink, and the ring buffer as a value.  logging-nv keeps the file, console and deflog sinks and the rotation.  Interface only — every body is a todo()."
 
 # `license` sits immediately after the name, before any value that could
@@ -59,7 +59,7 @@ novo        = ">= 0.8.9"
 # The reason it is a dependency rather than an escape string: a level
 # tag written as `"\u{1b}[31m"` cannot be downgraded to the sixteen
 # colours a real TTY has, and `sgr.downgrade` is exactly that arithmetic.
-ansi-nv = "^0.0.1"
+ansi-nv = "^0.2.2"
 
 # NOT deflog-decoder and NOT deflog-parser.  logging-nv depends on both
 # for `lgdeflog`, and their closure — elf-nv, leb128-nv, zigzag-nv,
